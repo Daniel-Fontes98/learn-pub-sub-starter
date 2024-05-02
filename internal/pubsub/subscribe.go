@@ -1,6 +1,10 @@
 package pubsub
 
-import amqp "github.com/rabbitmq/amqp091-go"
+import (
+	"encoding/json"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+)
 
 type SimpleQueueType int
 
@@ -39,4 +43,35 @@ func DeclareAndBind(
 	}
 
 	return ch, queue, nil
+}
+
+func SubscribeJSON[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	simpleQueueType SimpleQueueType,
+	handler func(T),
+) error {
+	ch, _, err := DeclareAndBind(conn, exchange, queueName, key, simpleQueueType)
+	if err != nil {
+		return err
+	}
+
+	deliveryCh, err := ch.Consume(queueName, "", false, false, false, false, nil)
+	if err != nil {
+		return nil
+	}
+
+	go func() error {
+		for msg := range deliveryCh{
+			var unmarshalledMsg T
+			json.Unmarshal(msg.Body, &unmarshalledMsg)
+			handler(unmarshalledMsg)
+			msg.Ack(false)
+		}
+		return nil
+	}()
+
+	return nil
 }

@@ -22,17 +22,44 @@ func main() {
 
 	username, err := gamelogic.ClientWelcome()
 	if err != nil {
-		log.Fatalf("Couldn't get username")
+		log.Fatalf("Couldn't get username: %v", err)
 	}
 
-	pubsub.DeclareAndBind(
+	gs := gamelogic.NewGameState(username)
+	ch, _, err := pubsub.DeclareAndBind(
 		conn,
-		routing.ExchangePerilDirect,
-		routing.PauseKey+"."+username,
-		routing.PauseKey, 
+		routing.ExchangePerilTopic,
+		routing.ArmyMovesPrefix+"."+gs.GetUsername(),
+		routing.ArmyMovesPrefix+".*",
 		pubsub.SimpleQueueTransient,
 	)
-	state := gamelogic.NewGameState(username)
+	if err != nil {
+		log.Fatalf("Couldn't bind to army move channel: %v", err)
+	}
+
+	err = pubsub.SubscribeJSON(
+		conn, 
+		routing.ExchangePerilDirect,
+		routing.PauseKey+"."+gs.GetUsername(),
+		routing.PauseKey,
+		pubsub.SimpleQueueTransient,
+		handlerPause(gs),
+	)
+	if err != nil {
+		log.Fatalf("Couldn't subscribe to pause queue: %v", err)
+	}
+
+	err = pubsub.SubscribeJSON(
+		conn,
+		routing.ExchangePerilTopic,
+		routing.ArmyMovesPrefix+"."+gs.GetUsername(),
+		routing.ArmyMovesPrefix,
+		pubsub.SimpleQueueTransient,
+		handlerMove(gs),
+	)
+	if err != nil {
+		log.Fatalf("Couldn't subscribe to pause queue: %v", err)
+	}
 
 	gamelogic.PrintClientHelp()
 	for {
@@ -43,19 +70,24 @@ func main() {
 
 		switch userInput[0] {
 		case "spawn":
-			err := state.CommandSpawn(userInput)
+			err := gs.CommandSpawn(userInput)
 			if err != nil {
 				log.Printf("Couldn't spawn a unit: %v", err)
 			}
 
 		case "move":
-			_, err := state.CommandMove(userInput)
+			am, err := gs.CommandMove(userInput)
 			if err != nil {
 				log.Printf("Couldn't move: %v", err)
 			}
 
+			err = pubsub.PublishJSON(ch, routing.ExchangePerilTopic, routing.ArmyMovesPrefix, am)
+			if err != nil {
+				log.Printf("Couldn't publish move: %v", err)
+			}
+
 		case "status":
-			state.CommandStatus()
+			gs.CommandStatus()
 
 		case "help":
 			gamelogic.PrintClientHelp()
@@ -68,7 +100,9 @@ func main() {
 			return
 
 		default:
-			fmt.Println("Invalid commad")
+			fmt.Println("Invalid command")
 		}
 	}
 }
+
+
